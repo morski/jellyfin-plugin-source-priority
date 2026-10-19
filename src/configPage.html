@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Source Priority</title></head>
+<body>
+<div id="SourcePriorityPage" data-role="page" class="page type-interior pluginConfigurationPage" data-require="emby-input,emby-button,emby-checkbox">
+  <div data-role="content"><div class="content-primary">
+    <form id="SourcePriorityForm">
+      <h2>Source Priority</h2>
+      <p>Choose folder priorities for movie and episode versions in each library. Higher numbers come first; equal numbers keep Jellyfin’s order. All copies remain selectable.</p>
+      <p>These are the media folders configured in your libraries, not every movie or show directory. Add a subfolder override when needed. The most specific matching path wins. Changes apply to new API responses without a restart; clients may cache or override the order.</p>
+      <label class="emby-checkbox-label"><input id="priorityEnabled" type="checkbox" is="emby-checkbox"><span>Enable source priorities</span></label>
+      <p id="priorityStatus" role="status" aria-live="polite"></p>
+      <div id="priorityLibraries"></div>
+      <button id="prioritySave" is="emby-button" class="raised button-submit block" type="submit" disabled>Save priorities</button>
+    </form>
+  </div></div>
+  <script>
+  (function () {
+    'use strict';
+    var id = '5abdf826-f64e-45c5-b3d8-9b9cf31a053f';
+    var page = document.querySelector('#SourcePriorityPage');
+    var form = page.querySelector('#SourcePriorityForm');
+    var container = page.querySelector('#priorityLibraries');
+    var status = page.querySelector('#priorityStatus');
+    var save = page.querySelector('#prioritySave');
+    var enabled = page.querySelector('#priorityEnabled');
+    var groups = [], original = null;
+    function key(value) { return String(value || '').replace(/-/g, '').toLowerCase(); }
+    function normal(path) { return path === '/' ? '/' : String(path || '').replace(/\/+$/, ''); }
+    function inside(path, root) {
+      path = normal(path); root = normal(root);
+      return root !== '' && path[0] === '/' && (root === '/' || path === root || path.indexOf(root + '/') === 0);
+    }
+    function element(tag, text, parent) {
+      var el = document.createElement(tag);
+      if (text !== undefined) el.textContent = text;
+      if (parent) parent.appendChild(el);
+      return el;
+    }
+    function fingerprint(config) {
+      return JSON.stringify([config.Enabled, (config.Libraries || []).map(function (l) {
+        return [key(l.LibraryId), (l.Folders || []).map(function (f) { return [f.Path, f.Priority]; })];
+      }), config.DeprioritizedPaths || []]);
+    }
+    function row(group, path, priority, fixed) {
+      var box = element('div', undefined, group.rows);
+      box.style.cssText = 'display:flex;gap:1em;align-items:end;flex-wrap:wrap;margin:1em 0';
+      var label = element('label', fixed ? 'Media folder' : 'Subfolder override', box);
+      label.style.flex = '1';
+      var input = element('input', undefined, label);
+      input.type = 'text'; input.value = path; input.required = true; input.readOnly = fixed;
+      input.className = 'emby-input'; input.style.cssText = 'display:block;width:100%;box-sizing:border-box';
+      var numberLabel = element('label', 'Priority', box);
+      var number = element('input', undefined, numberLabel);
+      number.type = 'number'; number.value = String(priority); number.required = true;
+      number.min = '-2147483648'; number.max = '2147483647'; number.step = '1';
+      number.className = 'emby-input'; number.style.cssText = 'display:block;width:8em';
+      var record = { box: box, path: input, priority: number };
+      group.records.push(record);
+      if (!fixed) {
+        var remove = element('button', 'Remove', box); remove.type = 'button'; remove.className = 'emby-button';
+        remove.addEventListener('click', function () {
+          group.records = group.records.filter(function (r) { return r !== record; }); box.remove();
+        });
+      }
+    }
+    function render(config, libraries) {
+      groups = []; container.replaceChildren(); enabled.checked = config.Enabled !== false;
+      libraries.forEach(function (library) {
+        var section = element('section', undefined, container);
+        element('h3', library.Name || 'Unnamed library', section);
+        var roots = (library.Locations || []).map(normal);
+        var group = { id: library.ItemId, roots: roots, records: [], rows: element('div', undefined, section) };
+        groups.push(group);
+        var stored = (config.Libraries || []).find(function (l) { return key(l.LibraryId) === key(library.ItemId); });
+        var values = new Map();
+        roots.forEach(function (root) {
+          values.set(root, (config.DeprioritizedPaths || []).some(function (p) { return inside(root, p); }) ? -100 : 0);
+        });
+        (config.DeprioritizedPaths || []).forEach(function (p) {
+          p = normal(p);
+          if (roots.some(function (root) { return inside(p, root); })) values.set(p, -100);
+        });
+        ((stored && stored.Folders) || []).forEach(function (r) { values.set(normal(r.Path), r.Priority); });
+        values.forEach(function (priority, path) { row(group, path, priority, roots.indexOf(path) !== -1); });
+        if (!roots.length) element('p', 'No configured media folders.', section);
+        var add = element('button', 'Add subfolder override', section);
+        add.type = 'button'; add.className = 'emby-button'; add.disabled = !roots.length;
+        add.addEventListener('click', function () { row(group, '', 0, false); });
+      });
+      if (!libraries.length) element('p', 'No libraries found. Add libraries in Jellyfin first.', container);
+      original = fingerprint(config); save.disabled = false;
+    }
+    async function load() {
+      save.disabled = true; status.textContent = 'Loading libraries…'; Dashboard.showLoadingMsg();
+      try {
+        var results = await Promise.all([ApiClient.getPluginConfiguration(id), ApiClient.getVirtualFolders()]);
+        render(results[0], results[1]); status.textContent = '';
+      } catch (error) { status.textContent = 'Could not load libraries or settings. Reopen this page to retry. ' + error.message; }
+      finally { Dashboard.hideLoadingMsg(); }
+    }
+    page.addEventListener('pageshow', load);
+    form.addEventListener('submit', async function (event) {
+      event.preventDefault();
+      if (!form.reportValidity()) return;
+      save.disabled = true; Dashboard.showLoadingMsg(); status.textContent = 'Saving…';
+      try {
+        var updated = groups.map(function (g) {
+          var seen = new Set();
+          var folders = g.records.map(function (r) {
+            var path = normal(r.path.value), priority = Number(r.priority.value);
+            if (!g.roots.some(function (root) { return inside(path, root); }))
+              throw new Error('Subfolders must be inside a configured media folder: ' + path);
+            if (seen.has(path)) throw new Error('Duplicate folder: ' + path);
+            if (!Number.isInteger(priority) || priority < -2147483648 || priority > 2147483647)
+              throw new Error('Priority must be a whole number within the input limits.');
+            seen.add(path); return { Path: path, Priority: priority };
+          });
+          return { LibraryId: g.id, Folders: folders };
+        });
+        var config = await ApiClient.getPluginConfiguration(id);
+        if (fingerprint(config) !== original) throw new Error('Settings changed elsewhere. Reopen the page before saving.');
+        // Keep entries for libraries temporarily absent from the folder listing.
+        config.Libraries = (config.Libraries || []).filter(function (l) {
+          return !updated.some(function (g) { return key(g.LibraryId) === key(l.LibraryId); });
+        }).concat(updated);
+        config.Enabled = enabled.checked;
+        // Retain legacy rules until the user removes them via explicit per-library overrides.
+        await ApiClient.updatePluginConfiguration(id, config);
+        var verified = await ApiClient.getPluginConfiguration(id);
+        if (fingerprint(verified) !== fingerprint(config))
+          throw new Error('Saved settings could not be confirmed. Reopen this page to check.');
+        original = fingerprint(verified); status.textContent = 'Priorities saved and confirmed.';
+      } catch (error) { status.textContent = 'Could not save: ' + error.message; }
+      finally { save.disabled = false; Dashboard.hideLoadingMsg(); }
+    });
+  }());
+  </script>
+</div>
+</body>
+</html>
