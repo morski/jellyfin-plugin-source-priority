@@ -1,1 +1,20 @@
-[]
+[
+  {
+    "guid": "5abdf826-f64e-45c5-b3d8-9b9cf31a053f",
+    "name": "Source Priority",
+    "description": "Per-library folder priorities for merged movie and TV episode versions.",
+    "overview": "Prefer versions from selected library folders while keeping every copy available.",
+    "owner": "morski",
+    "category": "General",
+    "versions": [
+      {
+        "version": "1.1.1.0",
+        "changelog": "See the GitHub release notes for this version.",
+        "targetAbi": "12.2.0.0",
+        "sourceUrl": "https://github.com/morski/jellyfin-plugin-source-priority/releases/download/v1.1.1/Source-Priority-1.1.1.zip",
+        "checksum": "b69ee811c0f4679452b1e40468026e19",
+        "timestamp": "2026-10-19T19:13:43Z"
+      }
+    ]
+  }
+]
